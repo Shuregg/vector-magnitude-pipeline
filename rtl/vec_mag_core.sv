@@ -1,10 +1,3 @@
-localparam AXIS_TDATA_WIDTH = COORD_WIDTH * 4;
-localparam COEFF_BASE = 32;
-localparam COEFF_BASE_CLOG2 = $clog2(COEFF_BASE);
-
-localparam ALPHA_MUL_32 = 1 * COEFF_BASE;	// alpha = 1; alpha*32 = 32.
-localparam BETA_MUL_32 = 5/32 * COEFF_BASE;	// beta = 5/32; beta*32 = 5.
-
 module vec_mag_core #(
 	COORD_WIDTH=8
 ) (
@@ -12,17 +5,26 @@ module vec_mag_core #(
 	input  logic aresetn,
 
 	// AXI-Stream Slave Interface
-	input  logic signed [AXIS_TDATA_WIDTH-1:0]	s_axis_tdata,	// tdata == {x1, y1, x2, y2}
+	input  logic signed [4*COORD_WIDTH-1:0]	s_axis_tdata,	// tdata == {x1, y1, x2, y2}
 	input  logic								s_axis_tvalid,
 	input  logic								s_axis_tlast,
 	output logic								s_axis_tready,
 
 	// AXI-Stream Master Interface
-	output logic signed [AXIS_TDATA_WIDTH-1:0]	m_axis_tdata,
+	output logic signed [4*COORD_WIDTH-1:0]	m_axis_tdata,
 	output logic								m_axis_tvalid,
 	output logic								m_axis_tlast,
 	input  logic								m_axis_tready
 );
+
+	// Local parameters
+	localparam AXIS_TDATA_WIDTH = COORD_WIDTH * 4;
+	localparam COEFF_BASE = 32;
+	localparam COEFF_BASE_CLOG2 = $clog2(COEFF_BASE);
+
+	localparam ALPHA_MUL_32 = 1 * COEFF_BASE;	// alpha = 1; alpha*32 = 32.
+	localparam BETA_MUL_32 = 5/32 * COEFF_BASE;	// beta = 5/32; beta*32 = 5.
+
 	// Stage 0 registers
 	logic [AXIS_TDATA_WIDTH-1:0] st0_data;
 	logic						 st0_valid;
