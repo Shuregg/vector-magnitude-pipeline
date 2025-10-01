@@ -36,7 +36,7 @@ module vec_mag_core #(
 	localparam BETA_MUL_32 = 5/32 * COEFF_BASE;	// beta = 5/32; beta*32 = 5.
 
 	// Control and Status signals
-	logic reset_combined;
+	logic resetn_combined;
 	logic x1_sign;
 	logic x2_sign;
 	logic y1_sign;
@@ -55,7 +55,7 @@ module vec_mag_core #(
 
 	// Busy logic
 	always_ff @(posedge aclk) begin : busy_shift_reg_logic
-    	if (!core_aresetn) begin
+    	if (!resetn_combined) begin
 			busy_shift_reg <= 5'b0;
     	end else begin
 			busy_shift_reg <= {busy_shift_reg[3:0], s_axis_tvalid && s_axis_tready};
@@ -86,6 +86,7 @@ module vec_mag_core #(
 	assign s_axis_tready = !s_axis_tvalid || m_axis_tready;
 
 	// Assigning output signals & buses
+	// True result = st4_max / 32
 	assign m_axis_tdata	 = st4_max[COORD_WIDTH+COEFF_BASE_CLOG2-1:COEFF_BASE_CLOG2];
 	assign m_axis_tvalid = st4_valid;
 	assign m_axis_tlast	 = 1'b1;
@@ -100,6 +101,12 @@ module vec_mag_core #(
 				st1_x_sub <= 0;
 				st1_y_sub <= 0;
 				st1_valid <= 1'b0;
+	 			x1_sign <= 0;
+	 			x2_sign <= 0;
+	 			y1_sign <= 0;
+	 			y2_sign <= 0;
+				x_sub_sign <= 0;
+				y_sub_sign <= 0;
 			end
 			else if(s_axis_tready) begin
 				`ifndef DEVELOPER_WIP 
@@ -185,7 +192,8 @@ module vec_mag_core #(
 					else
 						st4_max <= (st3_max + ((st3_min << 2) + st3_min));
 				`else
-					st4_max <= (st3_max + ((st3_min << 2) + st3_min));
+					// ALPHA_MUL_32 * max + BETA_MUL_32 * min = RESULT * 32, ALPHA_MUL_32 = 32, 
+					st4_max <= ( (st3_max << COEFF_BASE_CLOG2) + ((st3_min << 2) + st3_min));
 				`endif
 				data_processed_cnt++;
 			end

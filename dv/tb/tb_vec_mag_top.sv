@@ -234,7 +234,7 @@ module tb_vec_mag_top;
             
             // Configure core through APB
             $display("[CONFIG]   Configuring core...");
-            apb_write(32'h00, 32'h0000_0003); // Release reset and enable clock
+            apb_write(32'h00, 32'b10); // Release reset and enable clock
             repeat(10) @(posedge clk);
             
             // Check status register
@@ -298,7 +298,7 @@ module tb_vec_mag_top;
             
             // Test case: Large positive minus large negative (potential overflow)
             $display("[TEST]     Testing overflow scenario");
-            send_vector(8'sd127, 8'sd0, 8'sd-128, 8'sd0, 0);
+            send_vector(8'sd127, 8'sd0, -8'sd128, 8'sd0, 0);
             
             // Check overflow status
             repeat(20) @(posedge clk);
