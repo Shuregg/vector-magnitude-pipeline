@@ -29,11 +29,13 @@ module vec_mag_core #(
 
 	// Local parameters
 	localparam AXIS_TDATA_WIDTH = COORD_WIDTH * 4;
-	localparam COEFF_BASE = 32;
+	localparam COEFF_BASE = 128;
 	localparam COEFF_BASE_CLOG2 = $clog2(COEFF_BASE);
 
-	localparam ALPHA_MUL_32 = 1 * COEFF_BASE;	// alpha = 1; alpha*32 = 32.
-	localparam BETA_MUL_32 = 5/32 * COEFF_BASE;	// beta = 5/32; beta*32 = 5.
+	localparam ALPHA0_MUL_128 = 1 * COEFF_BASE;			// alpha0 = 1; alpha0 * 128 = 128.
+	localparam BETA0_MUL_128 = 5/32 * COEFF_BASE;		// beta0 = 5/32 = 20/128; beta * 128 = 20.
+	localparam ALPHA1_MUL_128 = 108/128 * COEFF_BASE;	// alpha1 = 108/128; alpha1 * 128 = 108.
+	localparam BETA1_MUL_128 = 71/128 * COEFF_BASE;		// beta1 = 71/128; beta1 * 128 = 71.
 
 	// Control and Status signals
 	logic resetn_combined;
@@ -79,18 +81,27 @@ module vec_mag_core #(
 	logic					st3_valid;
 
 	// Stage 4 registers
-	logic [COORD_WIDTH+COEFF_BASE_CLOG2-1:0] st4_max;
+	logic [COORD_WIDTH+COEFF_BASE_CLOG2-1:0] st4_z0_abs;
+	logic [COORD_WIDTH+COEFF_BASE_CLOG2-1:0] st4_z1_abs;
 	logic						 			 st4_valid;
+
+	// Stage 5 registers
+	logic [COORD_WIDTH+COEFF_BASE_CLOG2-1:0] st5_max;
+	logic						 			 st5_valid;
 
 	// Simple tready implementation
 	assign s_axis_tready = !s_axis_tvalid || m_axis_tready;
 
 	// Assigning output signals & buses
-	// True result = st4_max / 32
-	assign m_axis_tdata	 = st4_max[COORD_WIDTH+COEFF_BASE_CLOG2-1:COEFF_BASE_CLOG2];
-	assign m_axis_tvalid = st4_valid;
+	// True result = st5_max / 128
+	assign m_axis_tdata	 = st5_max[COORD_WIDTH+COEFF_BASE_CLOG2-1:COEFF_BASE_CLOG2];
+	assign m_axis_tvalid = st5_valid;
 	assign m_axis_tlast	 = 1'b1;
 
+	// -------------------------------------------------------------------------
+	// -- Stage 1: Converting 2 points to a single point (radius-vector)
+	// -------------------------------------------------------------------------
+	// x = (x1 - x2); y = (y1 - y2)
 	always_ff @(posedge aclk) begin : stage_1
 		if(!resetn_combined) begin
 			st1_x_sub <= 0;
@@ -137,16 +148,16 @@ module vec_mag_core #(
 		end
 	end
 
+	// -------------------------------------------------------------------------
+	// -- Stage 2: Calculation absolute value of subtraction (x = |x|; y = |y|)
+	// -------------------------------------------------------------------------
 	always_ff @(posedge aclk) begin : stage_2
 		if(!resetn_combined) begin
 			st2_x_abs <= 0;
 			st2_y_abs <= 0;
 			st2_valid <= 1'b0;
 		end else begin
-			if(!st1_valid) begin
-				st2_x_abs <= 0;
-				st2_y_abs <= 0;
-			end else begin
+			if(st1_valid) begin
 				st2_x_abs <= st1_x_sub[COORD_WIDTH-1] ? -st1_x_sub : st1_x_sub;
 				st2_y_abs <= st1_y_sub[COORD_WIDTH-1] ? -st1_y_sub : st1_y_sub;
 			end
@@ -154,17 +165,16 @@ module vec_mag_core #(
 		end
 	end
 
+	// -------------------------------------------------------------------------
+	// -- Stage 3: Finding 'max' and 'min'
+	// -------------------------------------------------------------------------
 	always_ff @(posedge aclk) begin : stage_3
 		if(!resetn_combined) begin
 			st3_max	  <= 0;
 			st3_min	  <= 0;
 			st3_valid <= 1'b0;
 		end else begin
-			if(!st2_valid) begin
-				st3_max	  <= 0;
-				st3_min	  <= 0;
-				st3_valid <= 1'b0;
-			end else begin
+			if(st2_valid) begin
 				if(st2_x_abs > st2_y_abs) begin
 					st3_max <= st2_x_abs;
 					st3_min <= st2_y_abs;
@@ -172,32 +182,48 @@ module vec_mag_core #(
 					st3_max <= st2_y_abs;
 					st3_min <= st2_x_abs;
 				end
-				st3_valid <= st2_valid;
 			end
+			st3_valid <= st2_valid;
 		end
 	end
 
+	// -------------------------------------------------------------------------
+	// -- Stage 4: Calculation of |z0| and |z1|.
+	// -------------------------------------------------------------------------
+	// |z0| = alpha0 * max + beta0 * min;
+	// |z1| = alpha1 * max + beta1 * min.
+
 	always_ff @(posedge aclk) begin : stage_4
 		if(!resetn_combined) begin
-			st4_max	  <= 0;
-			st4_valid <= 1'b0;
+			st4_z0_abs	<= 0;
+			st4_z1_abs	<= 0;
+			st4_valid	<= 0;
+		end else begin
+			if(st3_valid) begin
+				// |z0| * 128 = 128 * max + 20 * min = 128 * max + (16 + 4) * min
+				st4_z0_abs <= (st3_max << COEFF_BASE_CLOG2) + ((st3_min << 4) + (st3_min << 2));
+
+				// |z1| * 128 = 108 * max + 71 * min = (64 + 32 + 8 + 4) * max + (64 + 8 - 1) * min
+				st4_z1_abs <= ((st3_max << 6) + (st3_max << 5) + (st3_max << 3) + (st3_max << 2)) + ((st3_min << 6) + (st3_min << 3) - 1);
+			end
+			st4_valid	<= st3_valid;
+		end
+	end
+
+	// -------------------------------------------------------------------------
+	// -- Stage 5: Find max of |z0| and |z1|.
+	// -------------------------------------------------------------------------
+	always_ff @(posedge aclk) begin : stage_5
+		if(!resetn_combined) begin
+			st5_max	  <= 0;
+			st5_valid <= 1'b0;
 			data_processed_cnt <= 32'b0;
 		end else begin
-			if(!st3_valid) begin
-				st4_max	  <= 0;
-			end else begin
-				`ifdef DEVELOPER_WIP
-					if((st3_max << COEFF_BASE_CLOG2) > (st3_max + ((st3_min << 2) + st3_min)))
-						st4_max <= (st3_max << COEFF_BASE_CLOG2);
-					else
-						st4_max <= (st3_max + ((st3_min << 2) + st3_min));
-				`else
-					// ALPHA_MUL_32 * max + BETA_MUL_32 * min = RESULT * 32, ALPHA_MUL_32 = 32, 
-					st4_max <= ( (st3_max << COEFF_BASE_CLOG2) + ((st3_min << 2) + st3_min));
-				`endif
+			if(st4_valid) begin
+				st5_max <= (st4_z0_abs > st4_z1_abs) ? st4_z0_abs : st4_z1_abs;
 				data_processed_cnt++;
 			end
-			st4_valid <= st3_valid;
+			st5_valid <= st4_valid;
 		end
 	end
 
