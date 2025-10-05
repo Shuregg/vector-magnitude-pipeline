@@ -165,13 +165,14 @@ module tb_vec_mag_top;
         end
     endtask
     
-    // Function to calculate expected magnitude (alpha*max + beta*min approximation)
+    // Function to calculate expected magnitude with new improved algorithm
     function [COORD_WIDTH-1:0] calculate_expected_mag;
         input signed [COORD_WIDTH-1:0] x1, y1, x2, y2;
         logic signed [COORD_WIDTH-1:0] dx, dy;
         logic [COORD_WIDTH-1:0] abs_dx, abs_dy;
         logic [COORD_WIDTH-1:0] max_val, min_val;
-        logic [COORD_WIDTH+2:0] result; // Extra bits for intermediate calculation
+        logic [COORD_WIDTH+7:0] z0_abs, z1_abs; // 8 extra bits for 128x multiplication
+        logic [COORD_WIDTH+7:0] result;
         begin
             // Calculate differences
             dx = x1 - x2;
@@ -190,18 +191,28 @@ module tb_vec_mag_top;
                 min_val = abs_dx;
             end
             
-            // Alpha*max + beta*min approximation (alpha=1, beta=5/32)
-            // result = max + (min*5)>>5; // Equivalent to max + (min*5)/32
-            result = max_val + ((min_val * 5) >> 5);
+            // New improved algorithm: z0 = alpha0*max + beta0*min, z1 = alpha1*max + beta1*min
+            // alpha0 = 1, beta0 = 5/32 = 20/128
+            // alpha1 = 108/128, beta1 = 71/128
             
-            // Saturate to COORD_WIDTH bits
-            if (result > (2**COORD_WIDTH)-1)
+            // z0_abs * 128 = 128 * max + 20 * min
+            z0_abs = (max_val << 7) + ((min_val << 4) + (min_val << 2));
+            
+            // z1_abs * 128 = 108 * max + 71 * min
+            z1_abs = ((max_val << 6) + (max_val << 5) + (max_val << 3) + (max_val << 2)) + 
+                     ((min_val << 6) + (min_val << 3) - min_val);
+            
+            // Take maximum of z0 and z1, then divide by 128
+            result = (z0_abs > z1_abs) ? z0_abs : z1_abs;
+            
+            // Divide by 128 (right shift by 7) and saturate to COORD_WIDTH bits
+            if (result[COORD_WIDTH+7:7] > (2**COORD_WIDTH)-1)
                 calculate_expected_mag = (2**COORD_WIDTH)-1;
             else
-                calculate_expected_mag = result[COORD_WIDTH-1:0];
+                calculate_expected_mag = result[COORD_WIDTH+6:7]; // [14:7] for 8-bit output
                 
-            $display("[CALC]     Expected magnitude: %0d (dx:%0d, dy:%0d, max:%0d, min:%0d)", 
-                     calculate_expected_mag, dx, dy, max_val, min_val);
+            $display("[CALC]     Expected magnitude: %0d (dx:%0d, dy:%0d, max:%0d, min:%0d, z0:%0d, z1:%0d)", 
+                     calculate_expected_mag, dx, dy, max_val, min_val, z0_abs[COORD_WIDTH+6:7], z1_abs[COORD_WIDTH+6:7]);
         end
     endfunction
     
@@ -400,16 +411,77 @@ module tb_vec_mag_top;
         end
     endtask
     
+    // Test scenario: Improved algorithm verification
+    task test_improved_algorithm;
+        reg [COORD_WIDTH-1:0] received_mag, expected_mag;
+        begin
+            $display("\n=== TEST 5: Improved Algorithm Verification ===");
+            
+            // Test cases that benefit from the improved algorithm
+            $display("\n[TEST]     Vector (100,10) to (0,0)");
+            expected_mag = calculate_expected_mag(8'd100, 8'd10, 8'd0, 8'd0);
+            fork
+                send_vector(8'd100, 8'd10, 8'd0, 8'd0, 0);
+                receive_vector(received_mag, 100);
+            join
+            
+            if (received_mag !== expected_mag) begin
+                $display("[ERROR]    Magnitude mismatch: Got %0d, Expected %0d", 
+                         received_mag, expected_mag);
+                error_count++;
+            end else begin
+                $display("[PASS]     Magnitude correct: %0d", received_mag);
+            end
+            test_count++;
+            
+            // Test case with large difference between coordinates
+            $display("\n[TEST]     Vector (90,20) to (10,10)");
+            expected_mag = calculate_expected_mag(8'd90, 8'd20, 8'd10, 8'd10);
+            fork
+                send_vector(8'd90, 8'd20, 8'd10, 8'd10, 0);
+                receive_vector(received_mag, 100);
+            join
+            
+            if (received_mag !== expected_mag) begin
+                $display("[ERROR]    Magnitude mismatch: Got %0d, Expected %0d", 
+                         received_mag, expected_mag);
+                error_count++;
+            end else begin
+                $display("[PASS]     Magnitude correct: %0d", received_mag);
+            end
+            test_count++;
+            
+            // Test case where z1 should be larger than z0
+            $display("\n[TEST]     Vector (60,50) to (10,10)");
+            expected_mag = calculate_expected_mag(8'd60, 8'd50, 8'd10, 8'd10);
+            fork
+                send_vector(8'd60, 8'd50, 8'd10, 8'd10, 0);
+                receive_vector(received_mag, 100);
+            join
+            
+            if (received_mag !== expected_mag) begin
+                $display("[ERROR]    Magnitude mismatch: Got %0d, Expected %0d", 
+                         received_mag, expected_mag);
+                error_count++;
+            end else begin
+                $display("[PASS]     Magnitude correct: %0d", received_mag);
+            end
+            test_count++;
+        end
+    endtask
+    
     // Main test sequence
-    initial begin : main_test_sequence
-        $display("Starting vec_mag_top testbench...");
+    initial begin : main_test_seq
+        $display("Starting vec_mag_system testbench...");
         $display("Coordinate Width: %0d bits", COORD_WIDTH);
+        $display("Using IMPROVED algorithm with dual-formula approach");
         
         // Run tests
         test_basic_functionality;
         test_overflow_detection;
         test_reset_clock_gating;
         test_backpressure;
+        test_improved_algorithm;
         
         // Final status
         $display("\n=== TEST SUMMARY ===");
@@ -439,7 +511,7 @@ module tb_vec_mag_top;
     
     // Timeout for simulation
     initial begin
-        #50000; // 500us timeout
+        #500000; // 500us timeout
         $display("[TIMEOUT] Simulation timeout reached");
         $finish;
     end
