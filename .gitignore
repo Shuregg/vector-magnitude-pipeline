@@ -6,4 +6,4 @@ xrun.history
 xrun.key
 xrun.log
 *.log
-
+*.diag
